@@ -31,7 +31,9 @@ class SafetyNet:
         from ultralytics import YOLO
         self.cfg = cfg
         self.sel = resolve_env(cfg); print_env(self.sel)
-        self.yolo = YOLO(str(yolo_weights or DEFAULT_YOLO))
+        # 偵測器權重優先序：CLI --weights > config 的 yolo.weights > 預設 best.pt
+        # 想用「你自己的 YOLO .pt」只要在 config.yaml 設 yolo.weights 路徑，免動程式。
+        self.yolo = YOLO(str(yolo_weights or cfg["yolo"].get("weights") or DEFAULT_YOLO))
         self.sam = SamSegmenter(self.sel["sam"], self.sel["device"], cfg)
         self.dino = DinoEmbedder(self.sel["dino"], self.sel["device"], hub_dir=HUB)
         b = np.load(BANK_PATH, allow_pickle=True)

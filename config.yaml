@@ -20,6 +20,7 @@ models:
   dino_gpu: dinov2_vitb14
   dino_cpu: dinov2_vitb14
 yolo:
+  weights: null   # 留空=用 Workspace/runs/yolo/weights/best.pt；填你自己的 YOLO .pt 路徑即可(免動程式)
   conf: 0.12
   iou: 0.5
   imgsz: 640
