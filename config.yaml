@@ -1,0 +1,62 @@
+device: auto
+seed: 42
+classes:
+- screw
+- metal_nut
+- hazelnut
+- capsule
+textures:
+- carpet
+- grid
+- wood
+ood_classes:
+- cable
+- toothbrush
+- pill
+models:
+  yolo: yolo11n.pt
+  sam_gpu: sam2_b.pt
+  sam_cpu: mobile_sam.pt
+  dino_gpu: dinov2_vitb14
+  dino_cpu: dinov2_vitb14
+yolo:
+  conf: 0.12
+  iou: 0.5
+  imgsz: 640
+  epochs: 25
+  batch: 8
+sam:
+  bg_fill: black
+  min_mask_area_frac: 0.02
+  pad: 0.04
+matching:
+  metric: cosine
+  threshold: 0.3552
+  topk: 8
+  agg: knn
+  bank_augment: true
+  aug_rotations: 12
+  aug_photometric: false
+  use_sam_for_bank: false
+pipeline:
+  output_mode: cropped_roi
+data:
+  scene_size: 1024
+  golden_per_class: 20
+  pool_per_class: 20
+  n_train_scenes: 60
+  n_check_scenes: 30
+  n_calib_scenes: 30
+  objects_per_scene:
+  - 2
+  - 5
+  distractors_per_scene:
+  - 2
+  - 5
+  ood_per_scene:
+  - 1
+  - 3
+paths:
+  workspace: Workspace
+  raw: Workspace/raw
+  scenes: Workspace/scenes

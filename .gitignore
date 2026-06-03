@@ -1,0 +1,21 @@
+# 生成物 / 模型 / 快取（皆可由 `python run.py all` 重現，不入庫）
+# 資料、權重、特徵庫、結果、gui_cache、報表、logs
+Workspace/
+# torch.hub DINOv2 權重
+.cache/
+# 下載的 YOLO / SAM 權重 (yolo11n.pt, mobile_sam.pt, best.pt…)
+*.pt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# 本機工具設定 / 日誌
+.claude/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
