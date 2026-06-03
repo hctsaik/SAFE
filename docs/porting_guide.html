@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Safety Net — 移植指南：把 YOLO→SAM→DINO 驗證層套到你的專案</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#171d26; --panel2:#1d2530; --ink:#e6edf3; --muted:#9aa7b4;
+    --green:#28c850; --red:#eb3c3c; --blue:#4aa3ff; --yellow:#e8c84a; --line:#2a3340;
+    --accent:#5ad1c4;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif;
+    line-height:1.7;font-size:16px}
+  .wrap{display:grid;grid-template-columns:280px 1fr;max-width:1320px;margin:0 auto}
+  /* TOC */
+  nav{position:sticky;top:0;height:100vh;overflow:auto;padding:24px 18px;
+    background:var(--panel);border-right:1px solid var(--line)}
+  nav h1{font-size:17px;margin:0 0 4px;color:var(--accent)}
+  nav .sub{font-size:12px;color:var(--muted);margin-bottom:18px}
+  nav a{display:block;color:var(--muted);text-decoration:none;padding:6px 10px;
+    border-radius:7px;font-size:14px;margin:2px 0}
+  nav a:hover{background:var(--panel2);color:var(--ink)}
+  nav a.s{color:var(--accent);font-weight:600;margin-top:12px}
+  main{padding:40px 48px 120px;min-width:0}
+  h2{font-size:26px;margin:48px 0 14px;padding-top:8px;border-top:1px solid var(--line)}
+  h2:first-of-type{border-top:0;margin-top:0}
+  h3{font-size:19px;margin:26px 0 10px;color:var(--accent)}
+  p,li{color:#d3dbe3}
+  code{background:#0b1118;padding:2px 6px;border-radius:5px;font-size:13.5px;
+    color:#ffd9a0;font-family:"SF Mono",Consolas,monospace}
+  pre{background:#0b1118;border:1px solid var(--line);border-radius:10px;padding:16px;
+    overflow:auto;position:relative}
+  pre code{background:none;color:#cfe3ff;padding:0}
+  .copy{position:absolute;top:8px;right:8px;background:var(--panel2);color:var(--muted);
+    border:1px solid var(--line);border-radius:6px;font-size:12px;padding:3px 9px;cursor:pointer}
+  .copy:hover{color:var(--ink)}
+  .lead{font-size:18px;color:var(--ink);background:var(--panel);border-left:4px solid var(--accent);
+    padding:16px 20px;border-radius:0 10px 10px 0;margin:18px 0}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--accent)}
+  td code{white-space:nowrap}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .card h3{margin-top:0}
+  .pill{display:inline-block;font-size:12px;padding:2px 10px;border-radius:20px;
+    background:var(--panel2);color:var(--accent);border:1px solid var(--line);margin:2px}
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:10px;margin:18px 0}
+  .stage{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;padding:14px;text-align:center}
+  .stage .n{font-size:12px;color:var(--muted)}
+  .stage b{display:block;font-size:16px;margin:4px 0;color:var(--accent)}
+  .stage small{color:var(--muted);font-size:12.5px}
+  .arrow{align-self:center;color:var(--accent);font-size:22px}
+  .ok{color:var(--green)} .no{color:var(--red)} .mid{color:var(--yellow)}
+  ul.check{list-style:none;padding-left:0}
+  ul.check li{padding:7px 0 7px 0;border-bottom:1px dashed var(--line)}
+  ul.check input{margin-right:10px;transform:scale(1.2);vertical-align:middle;accent-color:var(--accent)}
+  .warn{background:#2a1a1a;border-left:4px solid var(--red);padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0}
+  .tip{background:#15241f;border-left:4px solid var(--green);padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 22px;margin:16px 0}
+  .step h3{display:flex;align-items:center;gap:10px}
+  .step h3 .num{background:var(--accent);color:#06120f;width:30px;height:30px;border-radius:50%;
+    display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:15px}
+  footer{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding:24px 0;margin-top:40px}
+  @media(max-width:880px){.wrap{grid-template-columns:1fr}nav{position:static;height:auto}
+    main{padding:24px}.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <h1>🛡️ The Safety Net</h1>
+  <div class="sub">移植指南 · 把 YOLO→SAM→DINO 驗證層套到你的專案</div>
+  <a class="s" href="#what">0 · 這是什麼</a>
+  <a href="#when">何時該用（決策清單）</a>
+  <a class="s" href="#arch">1 · 架構與資料流</a>
+  <a class="s" href="#steps">2 · 適配 6 步驟</a>
+  <a class="s" href="#config">3 · 設定對照表</a>
+  <a class="s" href="#api">4 · 可重用 API</a>
+  <a class="s" href="#tuning">5 · 調校與避坑（實戰）</a>
+  <a class="s" href="#eval">6 · 驗證方法</a>
+  <a class="s" href="#scenarios">7 · 落地情境範例</a>
+  <a class="s" href="#checklist">8 · 移植檢查清單 + FAQ</a>
+</nav>
+<main>
+
+<h2 id="what">0 · 這是什麼？</h2>
+<div class="lead">
+這是一個<strong>與「偵測器」和「類別清單」解耦的驗證層（Safety Net）</strong>：
+讓一個高靈敏、會誤報的偵測器（YOLO）負責「<em>這裡有沒有東西</em>」，
+再用 <strong>SAM 去背 + DINOv2 zero-shot 特徵 + 與少量 Golden 標準樣本比對</strong>
+來回答「<em>這東西是不是我要的目標、是哪一類</em>」。<br>
+近（cosine ≥ 閾值）= 真目標放行；遠 = 攔截 False Alarm。<strong>免重訓、小資料、類別可增減。</strong>
+</div>
+<p>關鍵心智模型（務必先建立）：</p>
+<div class="grid">
+  <div class="card"><h3>🔍 偵測器 (YOLO)</h3>
+    <p>只負責<strong>觸發</strong>——框出可疑位置，<strong>不分類、不判對錯</strong>。
+    刻意調成高 recall（低 conf），容許多框、誤報。</p></div>
+  <div class="card"><h3>🧠 驗證層 (SAM+DINO)</h3>
+    <p>負責<strong>裁決</strong>——去背後抽特徵，與每類 Golden 比 cosine 相似度，
+    取最像的類別與分數；<strong>True/False 與類別都由它決定</strong>。</p></div>
+</div>
+
+<h3 id="when">何時該用 / 不該用</h3>
+<p><strong class="ok">✅ 很適合，如果你符合多數：</strong></p>
+<ul class="check">
+  <li><input type="checkbox">偵測器容易<strong>誤報</strong>（高 recall、低 precision），或你想壓低 False Alarm</li>
+  <li><input type="checkbox">標註資料<strong>少</strong>，無法把分類器訓到強健</li>
+  <li><input type="checkbox">每個目標類別你能拿出<strong>少量（10–30 張）乾淨標準樣本（Golden）</strong></li>
+  <li><input type="checkbox">你想<strong>免重訓</strong>就加一層驗證；或類別會<strong>增減</strong>（加類別只要加 Golden）</li>
+  <li><input type="checkbox">目標物件與「非目標」在外觀上<strong>語意可分</strong></li>
+</ul>
+<div class="warn"><strong class="no">✗ 不適合：</strong>
+① 目標與干擾物<strong>本質極相似</strong>（例如某 OOD 的形狀=目標形狀，zero-shot 難分）；
+② 需要<strong>像素級瑕疵分級</strong>（良品 vs 刮痕程度）——那是異常偵測/分割的題目；
+③ 完全沒有任何標準樣本可參照。</div>
+
+<h2 id="arch">1 · 架構與資料流</h2>
+<div class="flow">
+  <div class="stage"><div class="n">輸入</div><b>📷 原始大圖</b><small>你的相機/掃描影像</small></div>
+  <div class="arrow">→</div>
+  <div class="stage"><div class="n">① 觸發</div><b>YOLO</b><small>高 recall<br>輸出 bbox（不分類）</small></div>
+  <div class="arrow">→</div>
+  <div class="stage"><div class="n">② 去背</div><b>SAM</b><small>bbox→mask<br>剔背景（含 fallback）</small></div>
+  <div class="arrow">→</div>
+  <div class="stage"><div class="n">③ 特徵</div><b>DINOv2</b><small>zero-shot<br>→ 特徵向量</small></div>
+  <div class="arrow">→</div>
+  <div class="stage"><div class="n">④ 裁決</div><b>Vector Match</b><small>比 Golden 庫<br>近=✅ / 遠=❌</small></div>
+</div>
+<p>每一級需要你提供 / 系統產生的東西：</p>
+<table>
+<tr><th>級</th><th>元件</th><th>你要準備</th><th>產出</th></tr>
+<tr><td>①</td><td>YOLO（或任何偵測器）</td><td>少量 bbox 標註訓練一個高 recall 觸發器</td><td>候選框 + 信心值</td></tr>
+<tr><td>②</td><td>SAM / MobileSAM / FastSAM</td><td>無（zero-shot），選去背填色</td><td>去背後乾淨小圖</td></tr>
+<tr><td>③</td><td>DINOv2（ViT-S/B/L 14）</td><td>無（zero-shot，自動下載權重）</td><td>L2-normalized 特徵向量</td></tr>
+<tr><td>④</td><td>向量庫 + 閾值</td><td>每類 Golden 樣本 + 一小組校準資料</td><td>類別 + cosine 分數 + True/False</td></tr>
+</table>
+
+<h2 id="steps">2 · 適配你的專案：6 步驟</h2>
+<p>以本 repo（<code>github.com/hctsaik/SAFE</code>）為骨架，照下面改即可。先 <code>git clone</code> 後
+<code>pip install -r requirements.txt</code>。</p>
+
+<div class="step"><h3><span class="num">1</span>定義類別 + 蒐集 Golden</h3>
+<p>把你的目標類別的「標準長相」乾淨樣本放進 <code>Workspace/Training/&lt;類別&gt;/</code>，每類 10–30 張即可
+（去背或裁切到只剩物件本體最佳）。改 <code>config.yaml</code> 的 <code>classes</code>。</p>
+<pre><code>Workspace/Training/
+├── widget_a/  img001.png ... (15 張標準樣本)
+├── widget_b/  ...
+└── widget_c/  ...</code></pre></div>
+
+<div class="step"><h3><span class="num">2</span>準備高 recall 偵測器</h3>
+<p>用你的資料訓練 YOLO（單類 <code>object</code> 觸發器最簡單，類別交給 DINO；也可多類）。
+推論時把 <code>yolo.conf</code> 調低（如 0.1）以提高 recall——<strong>寧可多框，誤報交給後級攔</strong>。
+參考 <code>src/train_yolo.py</code>。若你已有偵測器，直接在管線中換掉即可。</p></div>
+
+<div class="step"><h3><span class="num">3</span>（可選）接 SAM 去背</h3>
+<p>已內建：<code>SamSegmenter.segment_crops(img, boxes)</code> 用 bbox 當 prompt 批次去背，
+mask 過小/失敗自動 fallback 回原始裁切。CPU 用 <code>mobile_sam.pt</code>、GPU 用 <code>sam2_b.pt</code>（自動偵測）。
+背景複雜時強烈建議開；背景單純可關以加速。</p></div>
+
+<div class="step"><h3><span class="num">4</span>建 DINOv2 特徵庫（含增強）</h3>
+<p>讀 <code>Training/</code>，對每張 Golden 做<strong>旋轉（必要）+ 視角增強</strong>後用 DINOv2 嵌入，存成
+<code>vector_bank.npz</code>。一行指令：</p>
+<pre><code>python src/build_bank.py        # 讀 config 的 classes + 增強設定</code></pre>
+<div class="tip">旋轉增強是<strong>關鍵</strong>：DINOv2 對旋轉敏感（實測某物件 0°→0.88、90°→0.53）。
+增強後各角度穩定 0.85+。見 <a href="#tuning">§5</a>。</div></div>
+
+<div class="step"><h3><span class="num">5</span>校準閾值（用代表性資料）</h3>
+<p>準備一小組<strong>有標籤</strong>的影像：哪些框是真目標、哪些是非目標（OOD/背景）。
+系統掃 cosine 閾值取最大化 F1 者，寫回 <code>config.yaml</code>。</p>
+<pre><code>python src/pipeline.py --calibrate</code></pre>
+<div class="warn">校準集務必<strong>涵蓋你會遇到的難度</strong>（光影、遮蔽、小物件…）。
+只用簡單樣本校準 → 閾值偏高 → 上線後真目標被誤殺。見 <a href="#tuning">§5</a>。</div></div>
+
+<div class="step"><h3><span class="num">6</span>推論、分發、驗證</h3>
+<pre><code>python src/pipeline.py --run                      # Check/ → Result/{True,False,No_Detection}
+python src/pipeline.py --run --output_mode annotated_full   # 畫框大圖（綠/紅）
+python run.py gui                                 # 視覺化檢視 + 即時調閾值</code></pre>
+<p>用 §6 的真實指標評估，未達標就回 §1/§4/§5 迭代（curate OOD、加增強、調閾值）。</p></div>
+
+<h2 id="config">3 · 設定對照表（<code>config.yaml</code>）</h2>
+<table>
+<tr><th>鍵</th><th>意義</th><th>你的專案怎麼設</th></tr>
+<tr><td><code>classes</code></td><td>目標類別（=Golden 子資料夾名）</td><td>你的目標物件清單</td></tr>
+<tr><td><code>ood_classes</code></td><td>已知「非目標」物件（建構/評測硬負樣本用）</td><td>選<strong>語意明確有別</strong>於目標者</td></tr>
+<tr><td><code>device</code></td><td>auto / cpu / cuda</td><td>留 <code>auto</code> 自動適配</td></tr>
+<tr><td><code>models.dino_*</code></td><td>DINOv2 規格</td><td>精度優先 <code>dinov2_vitb14</code>；速度優先 <code>dinov2_vits14</code></td></tr>
+<tr><td><code>models.sam_*</code></td><td>SAM 規格</td><td>CPU <code>mobile_sam.pt</code> / GPU <code>sam2_b.pt</code></td></tr>
+<tr><td><code>yolo.conf</code></td><td>觸發信心門檻</td><td>調低(0.05–0.15)提高 recall</td></tr>
+<tr><td><code>matching.threshold</code></td><td>cosine 判決閾值</td><td>由 <code>--calibrate</code> 自動寫入</td></tr>
+<tr><td><code>matching.topk / agg</code></td><td>kNN 取前 k 平均 / 或 prototype</td><td>預設 knn topk 5–8</td></tr>
+<tr><td><code>matching.aug_rotations</code></td><td>Golden 旋轉增強視角數</td><td>8–12（物件方向不固定就要開）</td></tr>
+<tr><td><code>sam.bg_fill</code></td><td>去背背景填色</td><td>black / blur（影響 DINO 特徵，可實驗）</td></tr>
+</table>
+
+<h2 id="api">4 · 可重用 API（嵌進你自己的管線）</h2>
+<p>不想用整個 repo 的目錄流程？三個核心類別可獨立使用：</p>
+<pre><code>import sys; sys.path.insert(0, "src")
+from common import load_config, SamSegmenter, DinoEmbedder, resolve_env
+import numpy as np, cv2
+
+cfg = load_config(); sel = resolve_env(cfg)          # 自動偵測 CUDA/CPU 選模型
+sam  = SamSegmenter(sel["sam"], sel["device"], cfg)  # 去背器
+dino = DinoEmbedder(sel["dino"], sel["device"])      # DINOv2 嵌入器（回傳 L2-normalized 向量）
+
+# 1) 建你自己的 Golden 向量庫（含旋轉增強）
+from build_bank import build; build(cfg)             # -> Workspace/vector_bank.npz
+
+# 2) 對一個偵測框做完整驗證
+img   = cv2.imread("frame.jpg")
+boxes = my_detector(img)                             # 你的偵測器：回傳 [[x1,y1,x2,y2], ...]
+crops = sam.segment_crops(img, boxes)                # 批次去背（一次編碼，CPU 友善）
+bank  = np.load("Workspace/vector_bank.npz", allow_pickle=True)
+bv, bl, classes = bank["vecs"], bank["labels"], [str(c) for c in bank["classes"]]
+thr, topk = cfg["matching"]["threshold"], cfg["matching"]["topk"]
+
+for (crop, sam_ok) in crops:
+    v = dino.embed(crop)                             # 768/384 維向量
+    sims = bv @ v                                    # cosine（皆已 normalize）
+    best, score = -1, -1.0
+    for ci in range(len(classes)):
+        s = np.sort(sims[bl == ci])[-topk:].mean()   # kNN
+        if s > score: score, best = s, ci
+    verdict = "TRUE:" + classes[best] if score >= thr else "FALSE(intercepted)"
+    print(verdict, round(float(score), 3))</code></pre>
+<p>或直接用封裝好的 <code>pipeline.SafetyNet</code>：<code>net = SafetyNet(cfg); recs = net.process(img)</code>。</p>
+
+<h2 id="tuning">5 · 調校與避坑（我們實際踩過的坑）</h2>
+<div class="grid">
+  <div class="card"><h3>🔄 旋轉敏感 → 旋轉增強</h3>
+  <p>DINOv2 對物件旋轉敏感。<strong>對 Golden 做旋轉增強</strong>（<code>aug_rotations</code>）讓特徵庫涵蓋各角度。
+  細長物件（螺絲、膠囊）尤其需要。</p></div>
+  <div class="card"><h3>🎭 OOD 要「語意明確有別」</h3>
+  <p>當作硬負樣本/評測的非目標物件，要挑<strong>外觀清楚不同</strong>於目標者。
+  本質相似者（zipper≈screw）zero-shot 難分 → 改擴充該目標的 Golden 或微調 DINO。</p></div>
+  <div class="card"><h3>🎚️ 閾值被嚴苛樣本拉低</h3>
+  <p>校準集只用簡單樣本→閾值偏高→上線誤殺；某些「不真實的極端劣化」樣本又會把閾值拉太低→放行誤報。
+  用<strong>代表性、混合難度</strong>的校準集，且情境要<strong>真實</strong>（例如反光是局部高光、非整片洗白）。</p></div>
+  <div class="card"><h3>🧩 去背餵 DINO 的方式</h3>
+  <p>黑底貼上 / 緊裁 / 模糊背景會改變特徵。預設黑底+緊裁；背景與物件同色時可試其他。
+  中空/強反光物件 SAM 會失效 → 一定要留 <strong>fallback（退回原始裁切）</strong>。</p></div>
+  <div class="card"><h3>⚡ CPU 慢 → 預算 / 換規格</h3>
+  <p>ViT-B/14 在 CPU 每次 embed 可能數秒。對策：把與閾值無關的重運算<strong>預算成快取</strong>
+  （見 <code>build_gui_cache</code>）、或改 <code>dinov2_vits14</code>、或上 GPU。</p></div>
+  <div class="card"><h3>📏 評分綁真實指標</h3>
+  <p>別用「角色自評」當分數。用<strong>有 GT 的資料</strong>量 Precision/Recall/攔截率，
+  分數才有意義、迭代才有方向。</p></div>
+</div>
+
+<h2 id="eval">6 · 驗證方法</h2>
+<p>把偵測框依與 GT 的關係分類，再算四個指標（定義要對齊，校準與評測共用）：</p>
+<table>
+<tr><th>框的真實身分</th><th>應該</th><th>指標</th></tr>
+<tr><td>命中真目標 (IoU&gt;0.5)</td><td>放行 True</td><td><b>真目標保留率</b> = 正確放行 / 全部真目標</td></tr>
+<tr><td>非目標（OOD/背景）</td><td>攔截 False</td><td><b>False Alarm 攔截率</b> = 正確攔截 / 全部誤報</td></tr>
+<tr><td>放行的框</td><td>—</td><td><b>Precision</b> = 放行中真的是目標的比例</td></tr>
+<tr><td>部分重疊 (0.1~0.5)</td><td>不計分</td><td>定位瑕疵，超出驗證層職責</td></tr>
+</table>
+<div class="tip"><strong>嚴格驗證迴圈（可選但推薦）：</strong>定義 N 種嚴苛情境 → 量分 → 未達標就自動調參/補資料/重生情境 →
+重測，直到平均達標。本 repo <code>src/evaluate.py</code> 即此機制（達 97.56/100），可直接改情境沿用。</div>
+<p>本 repo 實測（工業 AOI）：YOLO 誤報率 ~31% → DINO 攔截率 <b>97.7%</b>、真目標保留率 <b>97.9%</b>、
+Precision <b>69% → 99%</b>，且<strong>完全免重訓 YOLO</strong>。</p>
+
+<h2 id="scenarios">7 · 落地情境範例</h2>
+<table>
+<tr><th>情境</th><th>目標類別 (Golden)</th><th>OOD / 誤報來源</th><th>備註</th></tr>
+<tr><td>工業 AOI 光學檢測</td><td>各零件/元件型號</td><td>其他元件、反光、紋理斑</td><td>本 repo demo；金屬反光要當真實高光處理</td></tr>
+<tr><td>零售貨架辨識</td><td>各 SKU 商品正面</td><td>其他品牌、價標、空位</td><td>類別常增減 → 免重訓加 Golden 很適合</td></tr>
+<tr><td>生態相機陷阱</td><td>目標物種</td><td>其他動物、落葉、陰影</td><td>夜間/動模糊 → 增強要含亮度/模糊</td></tr>
+<tr><td>醫療 ROI 複核</td><td>特定病灶型態</td><td>正常組織、雜訊偽影</td><td>當作初篩複核，需臨床驗證；高保留率優先</td></tr>
+<tr><td>文件 / Logo 驗證</td><td>合法 logo / 印章樣式</td><td>仿冒、其他標記</td><td>形狀固定 → 旋轉增強可少；閾值可較嚴</td></tr>
+<tr><td>農產品分級/計數</td><td>各等級/品項標準樣本</td><td>雜物、葉片、重疊</td><td>遮蔽多 → 評測要含遮蔽情境</td></tr>
+</table>
+<p>共通做法：<strong>目標 = 你要放行的 → 放 Golden；誤報來源 = 你要擋的 → 當 OOD/評測負樣本</strong>。</p>
+
+<h2 id="checklist">8 · 移植檢查清單 + FAQ</h2>
+<ul class="check">
+  <li><input type="checkbox">確認問題符合 <a href="#when">§0 決策清單</a>（高誤報、小資料、有 Golden）</li>
+  <li><input type="checkbox">每類放 10–30 張乾淨 Golden 到 <code>Workspace/Training/&lt;類別&gt;/</code>，更新 <code>config.classes</code></li>
+  <li><input type="checkbox">準備/接上高 recall 偵測器（低 conf）</li>
+  <li><input type="checkbox">決定是否用 SAM 去背（背景複雜→開）</li>
+  <li><input type="checkbox"><code>python src/build_bank.py</code> 建特徵庫（開旋轉增強）</li>
+  <li><input type="checkbox">備一組<strong>代表性、含難度、真實</strong>的有標籤校準集</li>
+  <li><input type="checkbox"><code>python src/pipeline.py --calibrate</code> 定閾值</li>
+  <li><input type="checkbox"><code>--run</code> 推論分發；用 <a href="#eval">§6 真實指標</a>評估</li>
+  <li><input type="checkbox">未達標：curate OOD / 加增強 / 調校準集 / 換 DINO 規格 → 重測</li>
+  <li><input type="checkbox">CPU 慢就預算快取或換 ViT-S/14；上線監看誤報率/攔截率</li>
+</ul>
+
+<h3>FAQ</h3>
+<div class="grid">
+  <div class="card"><h3>Q：一定要用 YOLO 嗎？</h3>
+  <p>不用。任何能輸出 bbox 的偵測器都行（甚至滑動視窗）。驗證層只吃「框」。</p></div>
+  <div class="card"><h3>Q：要多少 Golden？</h3>
+  <p>每類 10–30 張通常夠（few-shot）。樣本越乾淨、涵蓋越多外觀變化越好；旋轉/光度由增強補。</p></div>
+  <div class="card"><h3>Q：新增一個類別要重訓嗎？</h3>
+  <p>不用。加一個 Golden 子資料夾、重建特徵庫即可（DINO 是 zero-shot）。這正是本架構的最大優勢。</p></div>
+  <div class="card"><h3>Q：一定要 GPU 嗎？</h3>
+  <p>不用，CPU 可跑（本 repo 全程 CPU 驗證）。只是慢，用預算快取/ViT-S/14 緩解；量大上 GPU。</p></div>
+  <div class="card"><h3>Q：DINO 分不出兩個很像的目標怎麼辦？</h3>
+  <p>擴充該類 Golden、提高 <code>topk</code>、或對 DINO 做輕量微調（LoRA/線性探針）。最後手段才動 DINO。</p></div>
+  <div class="card"><h3>Q：閾值要不要每類不同？</h3>
+  <p>預設全域單一閾值最簡單。若某類特別容易混淆，可擴成每類閾值（進階）。</p></div>
+</div>
+
+<footer>
+The Safety Net — 移植指南　·　原始碼：github.com/hctsaik/SAFE　·　架構：YOLO（觸發）→ SAM（去背）→ DINOv2（特徵）→ Vector Matching（裁決）<br>
+🤖 由多智能體協作（Solutions Architect · AI Engineer · Domain Expert · Tech Writer）討論後產出。
+</footer>
+</main>
+</div>
+<script>
+// 複製按鈕
+document.querySelectorAll('pre').forEach(pre=>{
+  const b=document.createElement('button');b.className='copy';b.textContent='複製';
+  b.onclick=()=>{navigator.clipboard.writeText(pre.innerText.replace(/複製$/,'').trim());
+    b.textContent='已複製';setTimeout(()=>b.textContent='複製',1200);};
+  pre.appendChild(b);
+});
+// TOC 捲動高亮
+const links=[...document.querySelectorAll('nav a')];
+const map=new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
+const obs=new IntersectionObserver(es=>{es.forEach(e=>{
+  if(e.isIntersecting){links.forEach(l=>l.style.background='');
+    const a=map.get(e.target.id);if(a)a.style.background='var(--panel2)';}});},
+  {rootMargin:'-10% 0px -80% 0px'});
+document.querySelectorAll('h2[id]').forEach(h=>obs.observe(h));
+</script>
+</body>
+</html>
