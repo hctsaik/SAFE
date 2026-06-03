@@ -150,28 +150,124 @@ def thermometer(score, thr, passed):
     return fig
 
 
+# ----------------------------- 📤 資料與設定頁 -----------------------------
+DINO_OPTS = ["dinov2_vits14（快, 預設）", "dinov2_vitb14（準, CPU 慢）", "dinov2_vitl14（最準, 最慢）"]
+
+
+def render_setup_page():
+    ss = st.session_state
+    up = WS / "uploads"; up.mkdir(parents=True, exist_ok=True)
+    st.header("📤 資料與設定 — 上傳你的資料 → 一鍵建置（零訓練）")
+    st.caption("不訓練任何模型：依你的標註自動裁出 Golden、用 DINO 嵌入成特徵庫、(有權重)自動校準閾值。")
+    with st.expander("每個上傳的用途（先看）", expanded=False):
+        st.markdown(
+            "- **① GT ZIP（必填）**：影像 + YOLO **標註** txt（+`data.yaml`）→ 自動裁每類 Golden、當校準正樣本。\n"
+            "- **② Check ZIP（必填）**：影像 + YOLO **預測** txt（含誤報）→ 要被驗證的框（直接用，不再跑 YOLO）。\n"
+            "- **③ 權重 .pt（可選）**：自動校準閾值 + Inspector 即時單張。**只上傳你信任的權重。**\n"
+            "- GT 影像會**切兩半**：一半裁 Golden、一半當 hold-out 校準集（避免閾值樂觀）。\n"
+            "- Check 沒有真值 → 只給框數 + 分數直方圖 + 逐框 Golden 證據（無攔截率/保留率）。")
+
+    # ① GT ZIP
+    st.subheader("① Ground Truth ZIP")
+    gtz = st.file_uploader("影像 + YOLO 標註 txt（+ data.yaml）", type="zip", key="gtz")
+    names = None
+    if gtz is not None:
+        from setup_build import safe_extract, resolve_class_names, list_pairs, class_ids_present
+        if ss.get("gtz_name") != gtz.name:
+            (up / "gt.zip").write_bytes(gtz.getbuffer())
+            safe_extract(up / "gt.zip", up / "gt")
+            pairs = list_pairs(up / "gt")
+            ss.gtz_name = gtz.name
+            ss.gt_labeled = sum(1 for _, l in pairs if l)
+            ss.gt_names = resolve_class_names(up / "gt")
+            ss.gt_ids = class_ids_present(pairs)
+        st.success(f"解壓完成：{ss.gt_labeled} 份標註；類別編號 {ss.gt_ids}")
+        if ss.gt_names:
+            st.info(f"自動偵測類別名：{ss.gt_names}")
+            names = ss.gt_names
+        else:
+            st.warning("找不到 data.yaml / classes.txt — 請手動填每個編號的類別名：")
+            cols = st.columns(min(4, max(1, len(ss.gt_ids))))
+            names = [cols[k % len(cols)].text_input(f"類別 {cid}", value=f"class{cid}", key=f"nm{cid}")
+                     for k, cid in enumerate(ss.gt_ids)]
+        ss.names = names
+
+    # ② Check ZIP
+    st.subheader("② Check ZIP（含誤報的 YOLO 預測）")
+    ckz = st.file_uploader("影像 + YOLO 預測 txt", type="zip", key="ckz")
+    if ckz is not None:
+        from setup_build import safe_extract, list_pairs
+        if ss.get("ckz_name") != ckz.name:
+            (up / "check.zip").write_bytes(ckz.getbuffer())
+            safe_extract(up / "check.zip", up / "check")
+            ss.ckz_name = ckz.name
+            ss.ck_imgs = len(list_pairs(up / "check"))
+        st.success(f"解壓完成：{ss.ck_imgs} 張影像")
+
+    # ③ 權重
+    st.subheader("③ YOLO 權重 .pt（可選）")
+    wz = st.file_uploader("自動校準 + 即時單張用；Check 不需要它", type=["pt"], key="wz")
+    if wz is not None and ss.get("wz_name") != wz.name:
+        (up / "weights.pt").write_bytes(wz.getbuffer()); ss.wz_name = wz.name
+    if ss.get("wz_name"):
+        st.success(f"已上傳權重：{ss.wz_name}")
+
+    # ④ 模型 + 建置
+    st.subheader("④ 模型與一鍵建置")
+    variant = st.selectbox("DINO 特徵模型", DINO_OPTS, index=0).split("（")[0]
+    per_class = st.slider("每類 Golden 取幾張", 5, 40, 20)
+    ready = bool(gtz and ckz and ss.get("names") and all(ss.get("names", [])))
+    if not ready:
+        st.info("完成 ①②（並確認類別名都填好）即可建置。")
+    if st.button("🛠️ 建立特徵庫 + 校準（非訓練）", type="primary", disabled=not ready):
+        from setup_build import run_build
+        bar = st.progress(0.0, "開始…")
+        frac = {"split": .05, "golden": .3, "bank": .5, "calib": .7, "cache": .95, "done": 1.}
+        lab = {"split": "切分GT", "golden": "裁Golden", "bank": "建特徵庫", "calib": "校準",
+               "cache": "預算Check", "done": "完成"}
+        def pcb(stage, i, n, msg):
+            bar.progress(frac.get(stage, .5), f"{lab.get(stage, stage)} {i}/{n}  {msg}")
+        weights = str(up / "weights.pt") if ss.get("wz_name") else None
+        try:
+            with st.spinner("建置中（CPU 視資料量數分鐘）…"):
+                summ = run_build(up / "gt", up / "check", ss.names, weights=weights,
+                                 dino_variant=variant, per_class=per_class, progress=pcb)
+            load_cache.clear(); load_meta.clear()
+            ss.build_summary = summ
+            st.success(f"✅ 建置完成！Golden {sum(summ['golden'].values())} 張、"
+                       f"Check {summ['n_check_imgs']} 圖/{summ['n_check_boxes']} 框、"
+                       f"閾值 {summ['threshold']}（{'自動校準' if summ['calibrated'] else '預設'}）")
+            st.info("👉 切到側邊「🔍 檢視結果」即可看 Inspector / Dashboard。")
+        except Exception as e:
+            st.error(f"建置失敗：{e}")
+    if ss.get("build_summary"):
+        with st.expander("最近建置摘要"):
+            st.json(ss.build_summary)
+
+
 # ----------------------------- 啟動 -----------------------------
 cfg, CLASSES = load_meta()
-GT = load_gt()
 cache = load_cache()
+# 上傳的 Check 沒有真值 → 不顯示需要 GT 的指標(攔截率/保留率/Precision)，避免誤導
+GT = {} if (cache and cache.get("source") == "upload") else load_gt()
 if "feedback" not in st.session_state:
     st.session_state.feedback = {}
 
 st.title("🛡️ Safety Net Inspector")
+mode = st.sidebar.radio("模式", ["📤 資料與設定", "🔍 檢視結果"],
+                        index=(1 if cache is not None else 0))
+st.sidebar.divider()
+
+if mode.startswith("📤"):
+    render_setup_page()
+    st.stop()
+
+# ---- 🔍 檢視結果 ----
 st.caption("YOLO（高靈敏觸發器，只偵測「有物件」）→ SAM 去背 → DINOv2 特徵 → "
            "與 Golden 樣本比對 → 近=通過(綠) / 遠=攔截誤報(紅)。**分類由 DINO 決定，非 YOLO。**")
-render_help(default_open=(cache is None))
-
-# 快取不存在 → 提供一次性預算（避免每次開場重算）
+render_help(default_open=False)
 if cache is None:
-    st.warning("尚未建立 GUI 預算快取。第一次需計算 Check/ 全部偵測（與閾值無關，之後瞬開）。")
-    st.caption("也可在終端機執行： `python run.py gui`（會自動預算後啟動）")
-    if st.button("🔧 一次性預先計算（這台 CPU 約數分鐘）", type="primary"):
-        from pipeline import build_gui_cache
-        bar = st.progress(0.0, "準備中…")
-        build_gui_cache(progress=lambda i, n, nm: bar.progress((i + 1) / n, f"{i+1}/{n}  {nm}"))
-        load_cache.clear()
-        st.rerun()
+    st.info("尚未建立資料。請切到側邊「📤 資料與設定」上傳你的 GT/Check ZIP 並一鍵建置。")
     st.stop()
 
 with st.sidebar:
@@ -179,7 +275,8 @@ with st.sidebar:
     thr = st.slider("DINO 判決閾值 (cosine)", 0.0, 1.0, float(cfg["matching"]["threshold"]), 0.01,
                     help="拉高=攔更兇(precision↑/可能誤殺)；拉低=放更多過(recall↑)")
     st.caption(f"類別：{', '.join(CLASSES)}")
-    st.caption(f"快取：{cache['device']} · DINO {cache['dino']} · {len(cache['images'])} 張")
+    st.caption(f"快取：{cache['device']} · DINO {cache['dino']} · {len(cache['images'])} 張"
+               + ("（上傳）" if cache.get("source") == "upload" else ""))
     show_gt = st.checkbox("疊上 Ground Truth（評測模式）", value=False, disabled=not GT,
                           help="有 GT 時顯示真目標(黃)/非目標物件(青)")
     st.divider()
@@ -220,8 +317,7 @@ with tab_insp:
             if recs:
                 labels = [f"#{i} [{'✅' if decide(r,thr)=='True' else '❌'}] "
                           f"{r['pred_class']} {r['score']:.2f}" for i, r in enumerate(recs)]
-                sel = st.selectbox("選一個偵測框（看判決理由）", range(len(recs)),
-                                   format_func=lambda i: labels[i], key="insp_det")
+                sel = labels.index(st.selectbox("選一個偵測框（看判決理由）", labels, key="insp_det"))
             st.image(draw_boxes(full, recs, thr, gtinfo, sel), width="stretch")
             st.caption(COLOR_KEY)
         with c2:

@@ -47,11 +47,9 @@ def main():
         sh("evaluate.py")
     if a.stage == "gui":
         import subprocess as sp
-        cache = ROOT / "Workspace" / "gui_cache" / "check_records.pkl"
-        if not cache.exists():
-            print("[gui] 首次啟動：預先計算 Check/ 快取（一次性，CPU 約數分鐘）…")
-            sh("pipeline.py", "--gui_cache")
-        sp.run([sys.executable, "-m", "streamlit", "run", str(SRC / "gui_app.py")])
+        # 上傳頁可直接在瀏覽器內建置資料 → 不強制預先計算；加大上傳上限給 ZIP/權重
+        sp.run([sys.executable, "-m", "streamlit", "run", str(SRC / "gui_app.py"),
+                "--server.maxUploadSize", "2048"])
 
 
 if __name__ == "__main__":

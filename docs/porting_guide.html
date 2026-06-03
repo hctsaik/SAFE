@@ -66,6 +66,11 @@
   .step h3{display:flex;align-items:center;gap:10px}
   .step h3 .num{background:var(--accent);color:#06120f;width:30px;height:30px;border-radius:50%;
     display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:15px}
+  figure{margin:14px 0 22px}
+  .shot{width:100%;border:1px solid var(--line);border-radius:10px;display:block;
+    box-shadow:0 4px 18px rgba(0,0,0,.35)}
+  figcaption{color:var(--muted);font-size:13.5px;margin-top:8px}
+  figcaption b{color:var(--accent)}
   footer{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding:24px 0;margin-top:40px}
   @media(max-width:880px){.wrap{grid-template-columns:1fr}nav{position:static;height:auto}
     main{padding:24px}.grid{grid-template-columns:1fr}}
@@ -88,6 +93,7 @@
   <a class="s" href="#checklist">8 · 移植檢查清單 + FAQ</a>
   <a class="s" href="#deploy">9 · 整合與部署</a>
   <a class="s" href="#yolo" style="color:#5ad1c4">⭐ 10 · YOLO 使用者最方便做法</a>
+  <a class="s" href="#gui" style="color:#5ad1c4">🖥️ 11 · 自助式 GUI（圖解步驟）</a>
 </nav>
 <main>
 
@@ -427,6 +433,49 @@ python run.py gui               # 或開 GUI 視覺化 + 即時調閾值</code><
 <div class="warn"><strong>重要：</strong>本管線把 YOLO 當「<strong>觸發器</strong>」，會<strong>忽略 YOLO 自己的類別</strong>——
 類別與 True/False 一律由 DINO 比 Golden 決定。所以你的 YOLO 是<strong>單類或多類都沒差</strong>，
 也不必和你的目標類別一致。</div>
+
+<h2 id="gui">🖥️ 11 · 自助式 GUI：上傳資料 → 一鍵建置（圖解步驟）</h2>
+<div class="lead">完全<strong>不用寫程式、不用碰終端機（除了啟動）</strong>：在瀏覽器上傳你的
+GT/Check ZIP 與 YOLO 權重，按一個鈕就建好整套驗證層，馬上檢視結果。下圖是<strong>實際操作截圖</strong>。</div>
+<pre><code>python run.py gui          # 啟動後瀏覽器開 http://localhost:8501</code></pre>
+
+<figure><img class="shot" src="img/01_setup_empty.png" alt="Setup page">
+<figcaption><b>步驟 0：</b>開場停在左側「📤 資料與設定」。頁面就是三個上傳區（① GT ZIP、② Check ZIP、
+③ YOLO 權重）+ ④ 模型與一鍵建置。標題明寫「<b>零訓練</b>」。</figcaption></figure>
+
+<figure><img class="shot" src="img/02_gt_uploaded.png" alt="GT uploaded">
+<figcaption><b>步驟 1：上傳 GT ZIP</b>（影像 + YOLO 標註 txt + <code>data.yaml</code>）。系統自動解壓、
+讀出標註數，並<b>自動偵測類別名</b>（沒有 <code>data.yaml</code> 時會跳出欄位讓你手填）。</figcaption></figure>
+
+<figure><img class="shot" src="img/03_check_uploaded.png" alt="Check uploaded">
+<figcaption><b>步驟 2：上傳 Check ZIP</b>（影像 + YOLO <b>預測</b> txt，含誤報）。這些預測框會被直接驗證，
+<b>不再重跑 YOLO</b>。顯示「解壓完成：N 張影像」。</figcaption></figure>
+
+<figure><img class="shot" src="img/04_weights_uploaded.png" alt="Weights uploaded">
+<figcaption><b>步驟 3：上傳 YOLO 權重 <code>.pt</code>（可選）。</b>用於自動校準閾值與 Inspector 即時單張推論；
+Check 不需要它。只上傳你信任的權重。</figcaption></figure>
+
+<figure><img class="shot" src="img/05_ready_to_build.png" alt="Ready to build">
+<figcaption><b>步驟 4：選 DINO 特徵模型</b>（預設 <code>vits14</code> 快；可切 <code>vitb14</code> 更準）、
+設每類 Golden 張數，按紅色「<b>🛠️ 建立特徵庫 + 校準（非訓練）</b>」。</figcaption></figure>
+
+<figure><img class="shot" src="img/06_build_done.png" alt="Build done">
+<figcaption><b>建置完成（全程零訓練）。</b>進度條跑完後綠色提示：
+「<b>建置完成！Golden 16 張、Check 6 圖/24 框、閾值 0.7847（自動校準）</b>」。
+背後做了：依標註裁 Golden→去背→建特徵庫→用 hold-out 自動校準閾值→預算 Check 快取。</figcaption></figure>
+
+<figure><img class="shot" src="img/07_inspector.png" alt="Inspector">
+<figcaption><b>步驟 5：切到左側「🔍 檢視結果」→ Inspector。</b>點任一偵測框看<b>管線瀑布</b>：
+①YOLO 觸發 → ②SAM 去背 → ③DINO 最相似 Golden 並排 → ④裁決（圖中「TRUE — screw 0.87 ≥ 閾值 0.78」）。
+側邊閾值滑桿可即時重判。</figcaption></figure>
+
+<figure><img class="shot" src="img/08_dashboard.png" alt="Dashboard">
+<figcaption><b>Dashboard：批次總覽。</b>框數（觸發 24 / 通過 12 / 攔截 12）+ <b>分數直方圖</b>
+（紅=攔截群在低分、綠=通過群在高分、虛線=閾值，一眼看出分離）。
+上傳的 Check 沒有真值 → 不顯示攔截率/保留率等需要 GT 的指標（避免誤導）。</figcaption></figure>
+
+<div class="tip"><strong>就這樣。</strong>整段<strong>沒有任何訓練</strong>——你只上傳了「自帶的偵測器權重 + 標註資料」，
+系統用 SAM/DINO（zero-shot）幫你建好驗證層。要換資料就回「📤 資料與設定」重新上傳建置即可。</div>
 
 <footer>
 The Safety Net — 移植指南　·　原始碼：github.com/hctsaik/SAFE　·　架構：YOLO（觸發）→ SAM（去背）→ DINOv2（特徵）→ Vector Matching（裁決）<br>
