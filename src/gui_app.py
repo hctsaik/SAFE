@@ -33,7 +33,7 @@ BANK = WS / "vector_bank.npz"
 HARDNEG = WS / "HardNegatives"
 # 顏色以 RGB 定義（draw_boxes 在 RGB 影像上作畫，st.image 直接顯示 RGB）
 GREEN, RED = (40, 200, 80), (235, 60, 60)
-GT_TGT, GT_OOD = (235, 205, 40), (40, 200, 235)  # 真值: 黃=目標 / 青=OOD
+GT_TGT, GT_OOD = (235, 205, 40), (40, 200, 235)  # 真值: 黃=目標 / 青=非目標物件
 
 st.set_page_config(page_title="Safety Net Inspector", layout="wide",
                    initial_sidebar_state="expanded")
@@ -75,7 +75,7 @@ def get_net_and_gallery():
 
 
 COLOR_KEY = ("🟩 綠框 = 通過(DINO 認證的真目標+類別)　🟥 紅框 = 攔截(DINO 判定的誤報)"
-             "　🟨 黃框 = 真值GT-目標　🟦 青框 = 真值GT-OOD(評測模式)")
+             "　🟨 黃框 = 真值GT-目標　🟦 青框 = 真值GT-非目標物件(評測模式)")
 
 
 def render_help(default_open=True):
@@ -105,7 +105,7 @@ def render_help(default_open=True):
             "- **攔截 Intercept**：把 YOLO 的誤報判為 False、擋下來。")
         g2.markdown(
             "#### 指標怎麼算\n"
-            "- **False Alarm 率**：YOLO 觸發框中，*非真目標*(OOD/背景) 的比例。\n"
+            "- **False Alarm 率**：YOLO 觸發框中，*非真目標*(非目標物件/背景) 的比例。\n"
             "- **DINO 攔截率**：那些誤報中，被正確判成 False 的比例（越高越好）。\n"
             "- **真目標保留率**：真目標中，被正確放行(True) 的比例。\n"
             "- **Precision（安全網後）**：放行的框中真的是目標的比例。\n\n"
@@ -181,7 +181,7 @@ with st.sidebar:
     st.caption(f"類別：{', '.join(CLASSES)}")
     st.caption(f"快取：{cache['device']} · DINO {cache['dino']} · {len(cache['images'])} 張")
     show_gt = st.checkbox("疊上 Ground Truth（評測模式）", value=False, disabled=not GT,
-                          help="有 GT 時顯示真目標(黃)/OOD(青)")
+                          help="有 GT 時顯示真目標(黃)/非目標物件(青)")
     st.divider()
     st.caption("資料：config.yaml + vector_bank.npz + gui_cache")
 
@@ -280,7 +280,7 @@ with tab_dash:
             elif kind in ("ood", "bg"):
                 fa += 1; inter += int(not p)
         m[4].metric("False Alarm 率", f"{(fa/(tp+fa)*100 if tp+fa else 0):.0f}%",
-                    help="YOLO 觸發框中，非真目標(OOD+背景)的比例＝YOLO 誤報多嚴重")
+                    help="YOLO 觸發框中，非真目標(非目標物件＋背景)的比例＝YOLO 誤報多嚴重")
         k = st.columns(3)
         k[0].metric("DINO 攔截率", f"{(inter/fa*100 if fa else 100):.1f}%",
                     help="誤報中被 DINO 正確判為 False 的比例（安全網價值，越高越好）")

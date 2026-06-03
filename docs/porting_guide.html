@@ -86,6 +86,7 @@
   <a class="s" href="#eval">6 · 驗證方法</a>
   <a class="s" href="#scenarios">7 · 落地情境範例</a>
   <a class="s" href="#checklist">8 · 移植檢查清單 + FAQ</a>
+  <a class="s" href="#deploy">9 · 整合與部署</a>
 </nav>
 <main>
 
@@ -97,6 +98,13 @@
 來回答「<em>這東西是不是我要的目標、是哪一類</em>」。<br>
 近（cosine ≥ 閾值）= 真目標放行；遠 = 攔截 False Alarm。<strong>免重訓、小資料、類別可增減。</strong>
 </div>
+<div class="tip"><strong>🎯 你不用在這裡訓練任何模型。</strong>
+採用者<strong>帶著自己現有的偵測器</strong>（YOLO 或任何 production model）來，
+SAM 與 DINOv2 都是 zero-shot。你只需提供 <strong>3 件「非訓練」輸入</strong>：<br>
+① <strong>Adapter</strong>：把你模型的輸出轉成 <code>[x1,y1,x2,y2]</code> 像素框（~10 行）
+② <strong>Golden</strong>：每類丟 10–30 張乾淨樣本圖（不用標座標）
+③ <strong>閾值</strong>：用一小組標好的框自動校準——<em>或先用預設閾值直接跑</em>。<br>
+（<code>build_bank</code> 是「嵌入」不是訓練；<code>calibrate</code> 是「搜尋閾值」不是訓練。）</div>
 <p>關鍵心智模型（務必先建立）：</p>
 <div class="grid">
   <div class="card"><h3>🔍 偵測器 (YOLO)</h3>
@@ -117,7 +125,7 @@
   <li><input type="checkbox">目標物件與「非目標」在外觀上<strong>語意可分</strong></li>
 </ul>
 <div class="warn"><strong class="no">✗ 不適合：</strong>
-① 目標與干擾物<strong>本質極相似</strong>（例如某 OOD 的形狀=目標形狀，zero-shot 難分）；
+① 目標與干擾物<strong>本質極相似</strong>（例如某個非目標物件的形狀=目標形狀，zero-shot 難分）；
 ② 需要<strong>像素級瑕疵分級</strong>（良品 vs 刮痕程度）——那是異常偵測/分割的題目；
 ③ 完全沒有任何標準樣本可參照。</div>
 
@@ -154,10 +162,19 @@
 ├── widget_b/  ...
 └── widget_c/  ...</code></pre></div>
 
-<div class="step"><h3><span class="num">2</span>準備高 recall 偵測器</h3>
-<p>用你的資料訓練 YOLO（單類 <code>object</code> 觸發器最簡單，類別交給 DINO；也可多類）。
-推論時把 <code>yolo.conf</code> 調低（如 0.1）以提高 recall——<strong>寧可多框，誤報交給後級攔</strong>。
-參考 <code>src/train_yolo.py</code>。若你已有偵測器，直接在管線中換掉即可。</p></div>
+<div class="step"><h3><span class="num">2</span>接上你<strong>現有</strong>的偵測器（不訓練）</h3>
+<p>你已經有 YOLO 或 production model → <strong>直接用它的輸出</strong>，不需在本 repo 訓練。
+只要寫一個 <strong>Adapter</strong>，把你模型的結果轉成像素框清單 <code>[[x1,y1,x2,y2], ...]</code>：</p>
+<pre><code># adapter 範例：把「你的模型」接進驗證層
+def my_detector(img):
+    preds = your_model.predict(img)          # 你既有的推論
+    boxes = []
+    for p in preds:
+        boxes.append([p.x1, p.y1, p.x2, p.y2])   # 轉成像素 xyxy
+    return boxes
+# OBB/多邊形 → 取外接矩形；COCO xywh → [x, y, x+w, y+h]；正規化座標 → 乘上影像寬高</code></pre>
+<p>建議把偵測器的信心門檻<strong>調低一點</strong>以提高 recall（寧可多框，誤報交給後級攔）——這只是<strong>調參、不是重訓</strong>。
+<span class="pill">沒有偵測器才看</span>若你還沒有偵測器，<code>src/train_yolo.py</code> 可訓一個輕量 YOLO11n 觸發器當起點。</p></div>
 
 <div class="step"><h3><span class="num">3</span>（可選）接 SAM 去背</h3>
 <p>已內建：<code>SamSegmenter.segment_crops(img, boxes)</code> 用 bbox 當 prompt 批次去背，
@@ -171,9 +188,11 @@ mask 過小/失敗自動 fallback 回原始裁切。CPU 用 <code>mobile_sam.pt<
 <div class="tip">旋轉增強是<strong>關鍵</strong>：DINOv2 對旋轉敏感（實測某物件 0°→0.88、90°→0.53）。
 增強後各角度穩定 0.85+。見 <a href="#tuning">§5</a>。</div></div>
 
-<div class="step"><h3><span class="num">5</span>校準閾值（用代表性資料）</h3>
-<p>準備一小組<strong>有標籤</strong>的影像：哪些框是真目標、哪些是非目標（OOD/背景）。
-系統掃 cosine 閾值取最大化 F1 者，寫回 <code>config.yaml</code>。</p>
+<div class="step"><h3><span class="num">5</span>定閾值（校準 <em>或</em> 零校準快速啟動）</h3>
+<p><strong>路線 A — 零校準快速啟動（沒有標註資料時）：</strong>直接用預設閾值（如 <code>0.35</code>）先跑，
+看 GUI 的分數直方圖把滑桿拖到「真目標群」與「誤報群」之間，再寫回 config。0 標註即可上手。</p>
+<p><strong>路線 B — 自動校準（有少量標註時，更準）：</strong>準備一小組標好「真目標 / 非目標」的框，
+系統掃 cosine 閾值取最大化 F1 者：</p>
 <pre><code>python src/pipeline.py --calibrate</code></pre>
 <div class="warn">校準集務必<strong>涵蓋你會遇到的難度</strong>（光影、遮蔽、小物件…）。
 只用簡單樣本校準 → 閾值偏高 → 上線後真目標被誤殺。見 <a href="#tuning">§5</a>。</div></div>
@@ -182,7 +201,7 @@ mask 過小/失敗自動 fallback 回原始裁切。CPU 用 <code>mobile_sam.pt<
 <pre><code>python src/pipeline.py --run                      # Check/ → Result/{True,False,No_Detection}
 python src/pipeline.py --run --output_mode annotated_full   # 畫框大圖（綠/紅）
 python run.py gui                                 # 視覺化檢視 + 即時調閾值</code></pre>
-<p>用 §6 的真實指標評估，未達標就回 §1/§4/§5 迭代（curate OOD、加增強、調閾值）。</p></div>
+<p>用 §6 的真實指標評估，未達標就回 §1/§4/§5 迭代（整理非目標物件、加增強、調閾值）。</p></div>
 
 <h2 id="config">3 · 設定對照表（<code>config.yaml</code>）</h2>
 <table>
@@ -236,7 +255,7 @@ for (crop, sam_ok) in crops:
   <div class="card"><h3>🔄 旋轉敏感 → 旋轉增強</h3>
   <p>DINOv2 對物件旋轉敏感。<strong>對 Golden 做旋轉增強</strong>（<code>aug_rotations</code>）讓特徵庫涵蓋各角度。
   細長物件（螺絲、膠囊）尤其需要。</p></div>
-  <div class="card"><h3>🎭 OOD 要「語意明確有別」</h3>
+  <div class="card"><h3>🎭 非目標物件 要「語意明確有別」</h3>
   <p>當作硬負樣本/評測的非目標物件，要挑<strong>外觀清楚不同</strong>於目標者。
   本質相似者（zipper≈screw）zero-shot 難分 → 改擴充該目標的 Golden 或微調 DINO。</p></div>
   <div class="card"><h3>🎚️ 閾值被嚴苛樣本拉低</h3>
@@ -258,7 +277,7 @@ for (crop, sam_ok) in crops:
 <table>
 <tr><th>框的真實身分</th><th>應該</th><th>指標</th></tr>
 <tr><td>命中真目標 (IoU&gt;0.5)</td><td>放行 True</td><td><b>真目標保留率</b> = 正確放行 / 全部真目標</td></tr>
-<tr><td>非目標（OOD/背景）</td><td>攔截 False</td><td><b>False Alarm 攔截率</b> = 正確攔截 / 全部誤報</td></tr>
+<tr><td>非目標（非目標物件/背景）</td><td>攔截 False</td><td><b>False Alarm 攔截率</b> = 正確攔截 / 全部誤報</td></tr>
 <tr><td>放行的框</td><td>—</td><td><b>Precision</b> = 放行中真的是目標的比例</td></tr>
 <tr><td>部分重疊 (0.1~0.5)</td><td>不計分</td><td>定位瑕疵，超出驗證層職責</td></tr>
 </table>
@@ -269,7 +288,7 @@ Precision <b>69% → 99%</b>，且<strong>完全免重訓 YOLO</strong>。</p>
 
 <h2 id="scenarios">7 · 落地情境範例</h2>
 <table>
-<tr><th>情境</th><th>目標類別 (Golden)</th><th>OOD / 誤報來源</th><th>備註</th></tr>
+<tr><th>情境</th><th>目標類別 (Golden)</th><th>非目標物件 / 誤報來源</th><th>備註</th></tr>
 <tr><td>工業 AOI 光學檢測</td><td>各零件/元件型號</td><td>其他元件、反光、紋理斑</td><td>本 repo demo；金屬反光要當真實高光處理</td></tr>
 <tr><td>零售貨架辨識</td><td>各 SKU 商品正面</td><td>其他品牌、價標、空位</td><td>類別常增減 → 免重訓加 Golden 很適合</td></tr>
 <tr><td>生態相機陷阱</td><td>目標物種</td><td>其他動物、落葉、陰影</td><td>夜間/動模糊 → 增強要含亮度/模糊</td></tr>
@@ -277,7 +296,7 @@ Precision <b>69% → 99%</b>，且<strong>完全免重訓 YOLO</strong>。</p>
 <tr><td>文件 / Logo 驗證</td><td>合法 logo / 印章樣式</td><td>仿冒、其他標記</td><td>形狀固定 → 旋轉增強可少；閾值可較嚴</td></tr>
 <tr><td>農產品分級/計數</td><td>各等級/品項標準樣本</td><td>雜物、葉片、重疊</td><td>遮蔽多 → 評測要含遮蔽情境</td></tr>
 </table>
-<p>共通做法：<strong>目標 = 你要放行的 → 放 Golden；誤報來源 = 你要擋的 → 當 OOD/評測負樣本</strong>。</p>
+<p>共通做法：<strong>目標 = 你要放行的 → 放 Golden；誤報來源 = 你要擋的 → 當 非目標物件/評測負樣本</strong>。</p>
 
 <h2 id="checklist">8 · 移植檢查清單 + FAQ</h2>
 <ul class="check">
@@ -289,7 +308,7 @@ Precision <b>69% → 99%</b>，且<strong>完全免重訓 YOLO</strong>。</p>
   <li><input type="checkbox">備一組<strong>代表性、含難度、真實</strong>的有標籤校準集</li>
   <li><input type="checkbox"><code>python src/pipeline.py --calibrate</code> 定閾值</li>
   <li><input type="checkbox"><code>--run</code> 推論分發；用 <a href="#eval">§6 真實指標</a>評估</li>
-  <li><input type="checkbox">未達標：curate OOD / 加增強 / 調校準集 / 換 DINO 規格 → 重測</li>
+  <li><input type="checkbox">未達標：整理非目標物件 / 加增強 / 調校準集 / 換 DINO 規格 → 重測</li>
   <li><input type="checkbox">CPU 慢就預算快取或換 ViT-S/14；上線監看誤報率/攔截率</li>
 </ul>
 
@@ -308,6 +327,62 @@ Precision <b>69% → 99%</b>，且<strong>完全免重訓 YOLO</strong>。</p>
   <div class="card"><h3>Q：閾值要不要每類不同？</h3>
   <p>預設全域單一閾值最簡單。若某類特別容易混淆，可擴成每類閾值（進階）。</p></div>
 </div>
+
+<h2 id="deploy">9 · 整合與部署（接線 / 服務化 / 離線 / 即時）</h2>
+<p>把驗證層接進你<strong>既有系統</strong>的常見方式——皆<strong>不需訓練</strong>：</p>
+
+<h3>① 服務化：給其他語言/系統用的 REST 微服務</h3>
+<p>production 是 C#/Java、或下游只想「給圖→回 True/False」？把驗證層包成一支 FastAPI：</p>
+<pre><code># serve.py  →  uvicorn serve:app --port 8000
+from fastapi import FastAPI; import numpy as np, cv2, sys; sys.path.insert(0,"src")
+from common import load_config; from pipeline import SafetyNet
+app = FastAPI(); net = SafetyNet(load_config())          # 啟動載入一次
+@app.post("/verify")                                      # 傳影像 + 你偵測器的框
+def verify(image_b64: str, boxes: list):
+    img = cv2.imdecode(np.frombuffer(__import__("base64").b64decode(image_b64), np.uint8), 1)
+    out = []
+    for (crop, ok) in net.sam.segment_crops(img, boxes):
+        cls, score = net.match(net.dino.embed(crop))
+        out.append({"class": cls, "score": round(float(score),3),
+                    "verdict": "TRUE" if score>=net.threshold else "FALSE"})
+    return {"results": out}</code></pre>
+<p>下游（MES/DB）只要打這支 API、依 <code>verdict</code> 決定收/退，再把結果回寫即可（整合 hook 寫在你那端）。</p>
+
+<h3>② 離線 / 氣隙環境（不能下載權重）</h3>
+<p>在有網路的機器先把權重抓下來、隨專案打包，再複製到離線機：</p>
+<ul>
+  <li>DINOv2：首次 <code>build_bank</code> 會把權重存到 <code>.cache/torchhub/</code> → 整包複製過去，設 <code>torch.hub.set_dir()</code> 指向它。</li>
+  <li>YOLO/SAM：<code>yolo11n.pt</code>、<code>mobile_sam.pt</code> 等 <code>.pt</code> 隨專案帶。</li>
+  <li>離線機設環境變數避免連網檢查：<code>HF_HUB_OFFLINE=1</code>。</li>
+</ul>
+
+<h3>③ 即時 / 高吞吐</h3>
+<ul>
+  <li><strong>上 GPU</strong>：<code>device:auto</code> 會自動用 SAM2 + ViT-B；吞吐大增。</li>
+  <li><strong>背景單純就關 SAM</strong>：直接用偵測框裁切餵 DINO，省掉最貴的去背。</li>
+  <li><strong>用 <code>dinov2_vits14</code></strong>：embed 快數倍；或對偵測框<strong>批次</strong>嵌入。</li>
+  <li><strong>抽格驗證</strong>：影片不必逐格驗，觸發到才驗、或每 N 格驗一次。</li>
+</ul>
+
+<h3>④ 接線 cookbook（各種偵測器輸出 → 像素 xyxy）</h3>
+<table>
+<tr><th>你的輸出格式</th><th>轉換</th></tr>
+<tr><td>YOLO Ultralytics</td><td><code>r.boxes.xyxy.cpu().numpy()</code> 直接用</td></tr>
+<tr><td>COCO <code>[x,y,w,h]</code></td><td><code>[x, y, x+w, y+h]</code></td></tr>
+<tr><td>正規化 <code>cx,cy,w,h</code></td><td>乘影像寬高後轉角點</td></tr>
+<tr><td>旋轉框 OBB / 多邊形</td><td>取外接矩形 <code>cv2.boundingRect(pts)</code></td></tr>
+<tr><td>分割 mask</td><td>由 mask 取 bbox；或直接當 SAM 的 mask 用</td></tr>
+</table>
+
+<h3>⑤ 想沿用偵測器原本的多類別？（類別融合）</h3>
+<p>你的偵測器若本身有類別輸出，可當<strong>先驗</strong>：只比對 DINO 對「該偵測類別」的 Golden，
+或把「偵測類別==DINO 類別」當額外通過條件。能進一步壓誤報，但非必要——預設讓 DINO 獨立裁決最單純。</p>
+
+<h3>⑥ 極少樣本 / 極小物件</h3>
+<ul>
+  <li><strong>每類 &lt; 5 張 Golden</strong>：開好旋轉(+光度)增強補足；閾值取稍寬，靠 GUI 直方圖微調。</li>
+  <li><strong>物件 &lt; 32px</strong>：DINO 會把小圖放大、特徵變弱 → 提高來源解析度、或對該類多收幾張小尺寸 Golden。</li>
+</ul>
 
 <footer>
 The Safety Net — 移植指南　·　原始碼：github.com/hctsaik/SAFE　·　架構：YOLO（觸發）→ SAM（去背）→ DINOv2（特徵）→ Vector Matching（裁決）<br>

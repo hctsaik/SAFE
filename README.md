@@ -110,11 +110,11 @@ QA Reviewer 的 10 種嚴苛情境壓測（指標皆量測自具 GT 的合成場
 hollow_sam_fail 89.1、many_distractors 97.0、specular_glare 96.8、nearmiss_decoy 98.2、
 small_far 97.7、out_of_frame 100。完整紀錄見 `Workspace/validation_report.json`。
 
-**Check/ → Result/ 實跑**：30 張大圖 → True 102 / False 60 / No_Detection 0（OOD 物件與紋理/反光誘餌全部被攔截）。
+**Check/ → Result/ 實跑**：30 張大圖 → True 102 / False 60 / No_Detection 0（非目標物件與紋理/反光誘餌全部被攔截）。
 
 ### 關鍵工程決策（迭代得出）
-1. **OOD 硬負樣本**是本架構價值的核心展示：YOLO 對「物件」過度觸發，DINO 做「類別歸屬」驗證並攔截非目標物件（cable/toothbrush/pill）。
+1. **非目標物件（硬負樣本）**是本架構價值的核心展示：YOLO 對「物件」過度觸發，DINO 做「類別歸屬」驗證並攔截非目標物件（cable/toothbrush/pill）。
 2. **旋轉增強特徵庫**：DINOv2 對旋轉敏感（capsule 90° 0.88→0.53）；旋轉增強後各角度穩定 0.85+。
-3. **DINOv2 ViT-B/14 > ViT-S/14**：OOD 與目標的語意分離更佳（NEG 0.45→0.29）。
+3. **DINOv2 ViT-B/14 > ViT-S/14**：非目標物件與目標的語意分離更佳（NEG 0.45→0.29）。
 4. **已知限制**：與目標形狀本質相近的物件（zipper≈screw、bottle≈metal_nut）zero-shot 難以區分；正式環境需為該目標類別擴充 golden 樣本或微調。
 
