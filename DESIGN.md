@@ -138,3 +138,98 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 ## 8. 強制日誌格式（每輪迭代必記）
 `📌 [目前討論項目]` / `✅ [達成共識]` / `⚠️ [潛在爭議與風險]` / `🚀 [下一步行動]`
+
+---
+
+## 9. Data Flywheel 擴充（資料集管理 + 提升 YOLO 準度）
+
+### 9.1 核心洞察
+原系統是**推論期過濾器**（攔誤報），不會讓 YOLO *本身*變準。但安全網每跑一張圖就產出
+「已分類、SAM 去背、含 score/margin」的高品質判決——回收這些即可同時**自動標註**＋**回頭練 YOLO**。
+缺口的兩面（管理資料集、提升 YOLO 準度）其實是同一個飛輪。
+
+### 9.2 模組對應
+| # | 模組 | 服務目標 | 機制 |
+|---|---|---|---|
+| 地基 | `pipeline.match()` | 共用訊號 | 回傳 (cls, s1, s2)；margin=s1-s2 點亮 #2/#4/#7/#8 |
+| 1 | `autolabel.py` | 資料集管理 | 判決->YOLO txt；SAM 收緊框；高信度才匯出、灰帶留給 #2 |
+| 2 | `active_learning.py` | YOLO 準度 | margin/近閾值/裁決衝突 -> 待標佇列排序（模型免載，吃 cache） |
+| 3 | `audit.py` | 資料集管理 | DINO 嵌入：去重/洩漏/標籤錯誤/覆蓋 |
+| 4 | `curate.py` | 兩者 | 類間分離度/類內冗餘/補強優先序 |
+| 5 | per-class 閾值 | YOLO 準度 | `calibrate()` 逐類校準、`SafetyNet._thr()` 套用 |
+| 6 | `eval_real.py` | 裁判 | 真實 hold-out 跑同一張評分卡（複用 `evaluate.WEIGHTS`） |
+| 7 | `retrain_loop.py` | YOLO 準度 | 偽標+HardNeg->暖啟動重訓->hold-out 比 mAP->過了才換權重 |
+| 8 | `novelty.py` | 資料集管理 | 攔截框貪婪 cosine 群聚 -> 建議新類別 |
+
+### 9.3 閉環風險與煞車（confirmation bias）
+偽標噪音回灌可能讓 YOLO 越練越爛。對策（已落地於 #1/#2/#7）：
+1. **高信度才自動標**：`autolabel` 只匯出 `score≥閾值+pad 且 margin≥min_margin` 的框。
+2. **灰帶交給人**：貼近閾值/低 margin 的框不進訓練，改進 `active_learning` 佇列。
+3. **mAP 煞車**：`flywheel` 每輪在真實 hold-out 比 mAP50，未超過現役就 rollback、不換權重。
+
+### 9.4 已知限制
+- 飛輪 val 以「單類觸發器 mAP」量定位能力；類別品質由安全網/`eval_real` 把關。
+- `eval_real`/`flywheel` 的類別正確率需 hold-out 類別名與 Golden 類別名對齊（依名稱映射）。
+- per-class 閾值需該類在校準集有足量樣本（< `min_per_class` 退回全域）。
+
+### 9.5 強制日誌（本次擴充）
+- 📌 缺什麼能幫到資料集管理 + 提升 YOLO 準度。
+- ✅ 核心缺口＝Data Flywheel；最高 ROI＝autolabel+active；先體檢(audit/eval_real)再進補(flywheel)。
+- ⚠️ 閉環 confirmation bias、合成自評侷限 -> 以 gating + 真實 hold-out + mAP 煞車緩解。
+- 🚀 八項全數實作並逐一 smoke test 通過；指令併入 `run.py`。
+
+### 9.6 強化「判決蒸餾回 YOLO」（共識起手三件套：R1 + R3 + R5）
+原 #7 僅兌現蒸餾最弱版本（單類硬偽標 + 一刀切 + 單一全域 mAP + 一次性）。本次補上三條：
+
+| 代號 | 模組/變更 | 強化的蒸餾通道 | 機制 |
+|---|---|---|---|
+| **R1** | `distill.py` | 量測（成敗 KPI） | 同一批 YOLO 框上對比 YOLO-alone vs 安全網：**介入率**(應↓)、**precision_gap**(應縮)、(多類別)**class_acc_gap** |
+| **R3** | `retrain_loop.assemble_dataset` | 多信任（軟監督） | 由 (score-thr)×margin 算每圖信度 -> **高信度偽標重複放更多份**(重取樣)；純負樣本不放大；不改 ultralytics 內核 |
+| **R5** | `retrain_loop.gate()` | 煞車 | **三面向皆不退步才升級**：① hold-out per-class mAP ② 錨點集(防災難性遺忘) ③ 端到端安全網 P/R；任一退步即 rollback |
+
+驗證：R1 在合成 hold-out 上正確抓到「2 類 bank 缺類別 -> 安全網過度攔截真目標(recall 0.89->0.56)」；
+R3 信度->份數單調(高=3 份/低=1 份)；R5 anchor 遺忘 / per-class 退步 / 端到端掉 precision 任一情況皆正確擋下。
+KPI 指令：`python run.py distill --data <holdout>`。
+
+### 9.8 多類別逐類畢業（R2，雙軌蒸餾）
+把 DINO 的**分類知識**真正搬進 YOLO 的終局。雙軌：單類觸發器永遠是安全預設，多類別 opt-in，
+且**逐類畢業**——某類在 hold-out 上 YOLO 自分夠準且安全網介入夠低，那一類才交給 YOLO。
+
+| 子項 | 模組/變更 | 機制 |
+|---|---|---|
+| **R2a 多類別軌** | `flywheel --multiclass` / `assemble_dataset(multiclass)` | 偽標用 DINO 類別(net.classes)；val 依**名稱映射**到 net.classes(`_copy_pairs_remap`)；data.yaml 多類別 -> 訓「會分類的 YOLO」 |
+| **R2b 逐類畢業** | `distill.graduation()` + `distill --graduate [--write]` | 逐類算 YOLO 自分準確率/介入率/樣本數；達標(預設 acc≥0.9, 介入≤0.1, support≥10)才畢業，寫 `config.matching.graduated_classes` |
+| **R2c 雙軌推論** | `SafetyNet.detect()`(回傳 ycls) + `process()` + `_is_graduated()` | 多類別 YOLO 對**已畢業且高 conf** 的框直接信任(via=yolo，不跑 DINO 否決)；其餘照走安全網(via=safetynet) |
+
+安全設計：難分類別(zipper≈screw)因介入率高/自分低**永不畢業**，留安全網兜底；單類觸發器或
+`graduated_classes` 空時 `_is_graduated` 恆 False -> **完全向後相容**（行為與 R2 前一致）。
+驗證：`graduation()`(screw 畢業/zipper/rare 留)、`_is_graduated`(conf 門檻)、`_copy_pairs_remap`
+(映射/塌縮/None 略過)、多類別 data.yaml+偽標類別 {0,1}、`process()` 單類回歸(全 via=safetynet) 皆通過。
+
+### 9.9 進階標籤品質（R7–R10）
+讓蒸餾的偽標更乾淨、更聚焦 YOLO 盲點 —— 偽標品質直接決定學生上限。
+
+| 代號 | 模組/變更 | 機制 |
+|---|---|---|
+| **R7 硬負樣本挖掘** | `hardneg.py` + `assemble_dataset(hardneg_weight)` | 依 **wrongness=conf×(thr-score)** 排序「YOLO 最自信卻被攔」的盲點，匯出 provenance；含此類框的純負樣本影像**重取樣加權**回灌 -> 最快修正誤報 |
+| **R8 強化教師** | `DinoEmbedder.embed_tta()` + autolabel `--tta`/`--min_box_iou` | 多視角平均嵌入(更穩)+回傳一致性；要求 YOLO 框與 SAM 框 **IoU≥門檻**(定位可信)才當偽標 |
+| **R9 co-training** | autolabel `--cotrain` | 兩視角一致才匯出：多類別下 **YOLO 類別==DINO 類別** + TTA **一致性≥門檻**；分歧者落 active learning |
+| **R10 分割蒸餾** | `SamSegmenter.segment_full()` + autolabel `--seg` | SAM 遮罩 -> 最大輪廓 **多邊形** YOLO-seg 標籤（遮罩失敗退回 bbox 矩形）；可訓 `yolo11n-seg` 把 SAM 定位精度蒸進 YOLO |
+
+旗標可組合，並透傳 `flywheel`（`--hardneg_weight/--tta/--cotrain/--min_box_iou`）。
+驗證：`_neg_weight`(自信誤報高/正樣本 0)、`_mask_to_polygon`(方塊→4 點且界內)、`_box_polygon` 單測通過；
+模型 smoke：嚴格門檻觸發 box_disagree/unstable、hardneg 依 wrongness 排序、seg 產合法多邊形(task=segment)。
+備註：TTA 會改變匹配分數（多視角平均更貼近旋轉增強庫），可能升或降匯出量，屬預期。
+
+至此 R1–R10 全數落地；後續可往「真實產線資料 + 多輪實跑」收斂。
+
+### 9.7 多輪飛輪 + 血緣（R4 + R6）
+| 代號 | 模組/變更 | 機制 |
+|---|---|---|
+| **R4** | `run_flywheel(rounds, patience, min_delta)` + `_flywheel_round` | 每輪用**當前最佳 YOLO 再挖掘**偽標（YOLO 變強 -> 觸發先前漏抓 -> 偽標更多更好）；停止條件：達 rounds / 連續 `patience` 輪未升級 / mAP 平台期(`_plateau`) |
+| **R6** | `teacher_fingerprint()` + `append_ledger()` | 教師(golden 庫)每輪**凍結 + sha 指紋漂移檢查**（漂移即中止）；逐輪寫 `flywheel_ledger.json`(教師指紋/權重/三面向指標/gate/動作)；promote 時版本化備份權重 `flywheel_rN_*.pt` 可回溯任一輪 |
+
+效率：現役指標跨輪沿用（hold-out/錨點固定，僅升級時更新），避免重複量測。
+驗證：`_plateau`(改善中/平台期/樣本不足)、`teacher_fingerprint`(12 碼 sha)、`append_ledger`(append 正確) 單測通過；
+多輪 `--dry_run` 整合跑通（R3 重取樣 6->18、教師指紋入帳本、停止控制正確）。
+指令：`python run.py flywheel --holdout <dir> --rounds 5`。

@@ -16,6 +16,9 @@ __pycache__/
 .claude/
 *.log
 
+# 備份檔（如 config.mvtec.yaml.bak）
+*.bak
+
 # OS
 .DS_Store
 Thumbs.db

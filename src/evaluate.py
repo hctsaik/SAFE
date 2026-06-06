@@ -144,7 +144,7 @@ def collect_calib_features(net):
         oods = [o["box"] for o in sc.get("ood", [])]
         dets = net.detect(img)
         crops = net.sam.segment_crops(img, [d[0] for d in dets])
-        for (xyxy, _), (crop, _) in zip(dets, crops):
+        for (xyxy, _, _ycls), (crop, _) in zip(dets, crops):
             if crop.size == 0:
                 continue
             kind, _ = classify_box(xyxy, targets, oods)

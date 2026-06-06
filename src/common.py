@@ -8,6 +8,12 @@ from pathlib import Path
 import numpy as np
 
 warnings.filterwarnings("ignore")
+# Windows 主控台預設 cp950(Big5) 無法編碼 ⚠/≈/← 等字元會 crash；統一改 UTF-8(壞字以?替代)。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 os.environ.setdefault("YOLO_VERBOSE", "False")
 # polars 自帶的 CPU 旗標檢查在此機器上有 bug（誤報 'sse3'）；CPU 實際支援，故略過檢查。
 # ultralytics 訓練時會延遲 import polars 讀 results.csv，必須在其之前設定。
@@ -125,19 +131,22 @@ class SamSegmenter:
         return 0  # black (default)
 
     def _apply_mask(self, img, box, m):
-        """給定原圖、原始 box、整圖 mask(0/1)，回傳 (去背 tight crop, ok)。"""
+        """給定原圖、原始 box、整圖 mask(0/1)，回傳 (去背 tight crop, ok, tight_box)。
+        tight_box 為 mask 收緊後在「原圖座標」的 (x1,y1,x2,y2)；fallback 時退回 clip 後的原框。
+        收緊框讓 Auto-Label 的偽標 bbox 比 YOLO 原框更貼合物件（box 品質↑ -> mAP↑）。"""
         import cv2
         h, w = img.shape[:2]
         x1, y1, x2, y2 = box
         bx1, by1, bx2, by2 = clip_box(x1, y1, x2, y2, w, h)
         raw_crop = img[by1:by2, bx1:bx2].copy()
+        raw_box = (bx1, by1, bx2, by2)
         if m is None:
-            return raw_crop, False
+            return raw_crop, False, raw_box
         if m.shape[:2] != (h, w):
             m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
         box_area = max(1, (bx2 - bx1) * (by2 - by1))
         if int(m[by1:by2, bx1:bx2].sum()) < self.min_frac * box_area:
-            return raw_crop, False  # fallback：中空/反光導致 mask 過小
+            return raw_crop, False, raw_box  # fallback：中空/反光導致 mask 過小
         out = img.copy()
         if self.bg_fill == "blur":
             blurred = cv2.GaussianBlur(out, (0, 0), 8)
@@ -146,20 +155,22 @@ class SamSegmenter:
             out[m == 0] = self._fill_value(out)
         ys, xs = np.where(m[by1:by2, bx1:bx2] > 0)
         if len(xs) == 0:
-            return raw_crop, False
+            return raw_crop, False, raw_box
         cx1, cy1 = bx1 + xs.min(), by1 + ys.min()
         cx2, cy2 = bx1 + xs.max() + 1, by1 + ys.max() + 1
-        return out[cy1:cy2, cx1:cx2].copy(), True
+        return out[cy1:cy2, cx1:cx2].copy(), True, (int(cx1), int(cy1), int(cx2), int(cy2))
 
     def _pad_box(self, box, w, h):
         x1, y1, x2, y2 = box
         pw, ph = (x2 - x1) * self.pad, (y2 - y1) * self.pad
         return clip_box(x1 - pw, y1 - ph, x2 + pw, y2 + ph, w, h)
 
-    def segment_crops(self, img: np.ndarray, boxes: list) -> list:
-        """批次：一次 SAM 編碼處理多個 box（CPU 大幅加速）。回傳 [(crop, ok), ...]。"""
+    def _segment_core(self, img: np.ndarray, boxes: list) -> list:
+        """批次去背核心，回傳 [(crop, ok, tight_box, mask), ...]。mask 為原圖座標 0/1 遮罩(或 None)。
+        其餘公開方法皆由此切片（避免重複 SAM 推論）。"""
         if not boxes:
             return []
+        import cv2
         h, w = img.shape[:2]
         padded = [list(self._pad_box(b, w, h)) for b in boxes]
         masks = None
@@ -173,8 +184,23 @@ class SamSegmenter:
         out = []
         for i, b in enumerate(boxes):
             m = masks[i] if (masks is not None and i < len(masks)) else None
-            out.append(self._apply_mask(img, b, m))
+            if m is not None and m.shape[:2] != (h, w):
+                m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+            crop, ok, tight = self._apply_mask(img, b, m)
+            out.append((crop, ok, tight, m))
         return out
+
+    def segment_crops_boxed(self, img: np.ndarray, boxes: list) -> list:
+        """批次去背，回傳 [(crop, ok, tight_box), ...]。tight_box 為原圖座標收緊框。"""
+        return [(c, ok, t) for (c, ok, t, _m) in self._segment_core(img, boxes)]
+
+    def segment_full(self, img: np.ndarray, boxes: list) -> list:
+        """R10：批次去背並附整圖二值遮罩，回傳 [(crop, ok, tight_box, mask), ...]，供分割蒸餾取多邊形。"""
+        return self._segment_core(img, boxes)
+
+    def segment_crops(self, img: np.ndarray, boxes: list) -> list:
+        """批次：一次 SAM 編碼處理多個 box（CPU 大幅加速）。回傳 [(crop, ok), ...]。"""
+        return [(c, ok) for (c, ok, _t, _m) in self._segment_core(img, boxes)]
 
     def segment_crop(self, img: np.ndarray, box) -> tuple[np.ndarray, bool]:
         """單框版（內部呼叫批次版）。mask 空/過小 -> fallback 原始 bbox crop。"""
@@ -220,3 +246,24 @@ class DinoEmbedder:
     def embed_batch(self, crops: list[np.ndarray]) -> np.ndarray:
         return np.stack([self.embed(c) for c in crops]) if crops else \
             np.zeros((0, self.dim), np.float32)
+
+    def embed_tta(self, crop_bgr: np.ndarray, views: int = 4):
+        """R8 強化教師：對多個輕量增強視角嵌入後平均(再 L2-normalize)，得更穩健的查詢向量。
+        回傳 (mean_vec, consistency)；consistency=各視角向量間平均 cosine（越高=該 crop 的特徵越穩定，
+        越低=模稜兩可/含雜訊 -> 可作為偽標可信度的額外把關，見 R9 co-training）。"""
+        import cv2
+        vs = [crop_bgr]
+        if getattr(crop_bgr, "size", 0):
+            h, w = crop_bgr.shape[:2]
+            vs.append(cv2.flip(crop_bgr, 1))                      # 水平翻轉
+            for ang in (10, -10)[:max(0, views - 2)]:            # 輕微旋轉（語意保留）
+                M = cv2.getRotationMatrix2D((w / 2, h / 2), ang, 1.0)
+                vs.append(cv2.warpAffine(crop_bgr, M, (w, h), borderValue=(0, 0, 0)))
+        embs = np.stack([self.embed(v) for v in vs])             # 各自已 L2-normalize
+        mean = embs.mean(0); mean /= (np.linalg.norm(mean) + 1e-9)
+        if len(embs) > 1:
+            S = embs @ embs.T; iu = np.triu_indices(len(embs), k=1)
+            cons = float(S[iu].mean())
+        else:
+            cons = 1.0
+        return mean.astype(np.float32), cons

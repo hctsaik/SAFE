@@ -2,6 +2,9 @@
 # 環境：Python 3.11~3.14；CPU 即可（腳本自動偵測 CUDA 並適配）。
 # torch/torchvision 請依平台安裝（CPU: pip install torch torchvision；
 #                                  CUDA: 見 https://pytorch.org 選對應 cu 版本）
+# 下方用 >= 範圍以利跨平台安裝；最近驗證通過的版本組合（Win-ARM64 / Py3.14）：
+#   torch 2.12.0 · torchvision 0.27.0 · ultralytics 8.4.53 · opencv-python 4.13.0.92
+#   numpy 2.3.5 · scikit-learn 1.8.0 · pyyaml 6.0.3 · streamlit 1.56.0 · plotly 6.7.0
 torch>=2.2
 torchvision>=0.17
 ultralytics>=8.3        # 提供 YOLO11 + SAM/SAM2/MobileSAM/FastSAM

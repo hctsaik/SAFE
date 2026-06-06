@@ -167,10 +167,10 @@ def calibrate_from_gt(net, calib_pairs, progress=None):
         gt = [b for _, b, _ in read_yolo_txt(lbl, W, H)]
         dets = net.detect(im)
         crops = net.sam.segment_crops(im, [d[0] for d in dets])
-        for (xyxy, _), (crop, _) in zip(dets, crops):
+        for (xyxy, _, _ycls), (crop, _) in zip(dets, crops):
             if crop.size == 0:
                 continue
-            _, s = net.match(net.dino.embed(crop))
+            _, s, _ = net.match(net.dino.embed(crop))
             scores.append(s); pos.append(any(iou_xyxy(xyxy, g) > 0.5 for g in gt))
         if progress:
             progress("calib", k+1, len(calib_pairs), Path(img).name)
@@ -206,13 +206,14 @@ def build_cache_from_boxes(net, check_pairs, progress=None):
         for (box, (crop, ok)), conf in zip(zip(boxes, crops), confs):
             if crop.size == 0:
                 continue
-            vec = net.dino.embed(crop); cls, score = net.match(vec)
+            vec = net.dino.embed(crop); cls, score, score2 = net.match(vec)
             golden = []
             if len(gv):
                 sims = gv @ vec
                 golden = [(gp[i], gc[i], float(sims[i])) for i in np.argsort(sims)[::-1][:3]]
             x1, y1, x2, y2 = box
             recs.append(dict(box=[float(v) for v in box], conf=float(conf), score=float(score),
+                             score2=float(score2), margin=float(score - score2) if score2 >= 0 else 1.0,
                              pred_class=cls, sam_ok=bool(ok), vec=vec.astype(np.float32),
                              raw=im[y1:y2, x1:x2].copy(), sam=crop, golden=golden))
         images[Path(img).name] = recs
