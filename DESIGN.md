@@ -223,6 +223,28 @@ KPI 指令：`python run.py distill --data <holdout>`。
 
 至此 R1–R10 全數落地；後續可往「真實產線資料 + 多輪實跑」收斂。
 
+### 9.10 多參考庫嵌入審查（Multi-bank Embedding Audit）
+解決 FINDINGS 揭露的核心弱點：單一 Defect 庫 + 單閾值，**分不開細粒度同類誤報**（坑洞 vs 裂縫、
+bubble vs reflection）。改用「相對距離」對多個參考庫裁決。
+
+| 子項 | 模組/變更 | 機制 |
+|---|---|---|
+| #1 多庫比對 | `pipeline.match_audit()` + `_load_bank_vecs/_topk_sim` | crop 比 Defect/Reject(reflection)/Normal 三庫 Top-K；winner+lead 裁決 defect_like / reflection_like / normal_like / uncertain |
+| #2 庫建置 | `refbank.py` | Reject 來源：crop 目錄 / `hardneg` 硬負樣本；Normal：crop 目錄 / 自 YOLO 切分**自抽不重疊 GT 的背景 patch**（零標註） |
+| #3 信心分層 | `pipeline.process(audit_enabled)` + `config.audit` | conf≥`conf_high`→分類路；<→低信心嵌入審查路（recall 撈回）。`audit.enabled` 預設 false=**完全向後相容** |
+| #4 Hard-positive | `hardpos.py` | 低 conf + `match_audit`=defect_like → recall 撈回/hard-positive 池（hardneg 的鏡像） |
+
+**真實 A/B 驗證（pothole holdout 60，conf 0.03；Reject/Normal 庫來自 val/train，與 holdout 不重疊）：**
+
+| 模式 | 攔截率 | 保留率 | Precision |
+|---|---|---|---|
+| audit OFF（單庫閾值） | 0.265 | 1.000 | 0.625 |
+| **audit ON（多庫相對）** | **0.449** | 0.983 | **0.686** |
+
+攔截率 +70%（相對）、retention 幾乎不損。**誠實註記**：本次 Reject 庫抽到 0 向量——因路面裂縫對
+pothole 單庫分數常 > 閾值、未被 `hardneg` 攔到（正是要解決的問題），故此提升**全來自 Normal 背景庫**；
+補上有效 Reject 庫應更佳。指令：`refbank` 建庫 → `config.audit.enabled=true` → `eval_real/hardpos`。
+
 ### 9.7 多輪飛輪 + 血緣（R4 + R6）
 | 代號 | 模組/變更 | 機制 |
 |---|---|---|

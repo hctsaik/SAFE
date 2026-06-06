@@ -39,6 +39,10 @@ matching:
   aug_rotations: 12
   aug_photometric: false
   use_sam_for_bank: false
+audit:                 # 多參考庫嵌入審查（細粒度誤報；需先建 reject_bank/normal_bank）
+  enabled: false       # 預設關 = 行為與單庫一致；建好 reject/normal 庫後設 true 啟用
+  conf_high: 0.25      # YOLO conf >= 此值→分類路；< →低信心嵌入審查路（recall 撈回）
+  margin: 0.05         # defect 需領先 reject/normal 此相似度才判 defect_like
 pipeline:
   output_mode: cropped_roi
 data:

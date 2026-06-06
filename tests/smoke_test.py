@@ -103,9 +103,35 @@ def t_polygon():
     check("R10 mask=None->None", _mask_to_polygon(None, 100, 100) is None)
 
 
+# ---- pipeline: 多參考庫嵌入審查 match_audit ----
+def t_audit():
+    from pipeline import SafetyNet, _topk_sim
+
+    class Fake:
+        agg = "knn"; topk = 3; audit_margin = 0.05
+        match_scores = SafetyNet.match_scores; match = SafetyNet.match
+        match_audit = SafetyNet.match_audit
+
+    def bank(e, n=4, D=3):
+        b = np.zeros((n, D), np.float32); b[:, e] = 1.0; return b
+
+    def vec(*x):
+        a = np.array(x, np.float32); return a / np.linalg.norm(a)
+    f = Fake()
+    f.bank_vecs = bank(0); f.bank_labels = np.zeros(4, int); f.classes = ["defect"]
+    f.protos = bank(0, 1); f.reject_vecs = bank(1); f.normal_vecs = bank(2)
+    check("audit: 近 defect → defect_like", f.match_audit(vec(1, 0, 0))["verdict"] == "defect_like")
+    check("audit: 近 reject → reflection_like", f.match_audit(vec(0, 1, 0))["verdict"] == "reflection_like")
+    check("audit: 近 normal → normal_like", f.match_audit(vec(0, 0, 1))["verdict"] == "normal_like")
+    check("audit: defect 領先<margin → uncertain", f.match_audit(vec(1, 0.97, 0))["verdict"] == "uncertain")
+    f.reject_vecs = None; f.normal_vecs = None
+    check("audit: 無 aux 庫退化為 defect_like", f.match_audit(vec(0, 1, 0))["verdict"] == "defect_like")
+    check("_topk_sim: None→-1", _topk_sim(None, 3) == -1.0)
+
+
 def main():
     print("== SAFE 純邏輯 smoke test ==")
-    for fn in (t_threshold, t_flywheel, t_graduation, t_polygon):
+    for fn in (t_threshold, t_flywheel, t_graduation, t_polygon, t_audit):
         print(f"[{fn.__name__}]")
         try:
             fn()

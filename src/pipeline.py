@@ -26,6 +26,26 @@ HUB = str(ROOT / ".cache" / "torchhub")
 DEFAULT_YOLO = WS / "runs" / "yolo" / "weights" / "best.pt"
 
 
+def _load_bank_vecs(path):
+    """載入可選參考庫的向量矩陣（reject/normal）。不存在或空則回 None。"""
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        v = np.load(path, allow_pickle=True)["vecs"].astype(np.float32)
+        return v if len(v) else None
+    except Exception:
+        return None
+
+
+def _topk_sim(sims, k):
+    """一組 cosine 相似度取前 k 高的平均（與 defect 庫的 kNN 聚合一致）。空則 -1。"""
+    if sims is None or len(sims) == 0:
+        return -1.0
+    k = min(int(k), len(sims))
+    return float(np.sort(sims)[-k:].mean())
+
+
 class SafetyNet:
     def __init__(self, cfg, yolo_weights=None):
         from ultralytics import YOLO
@@ -51,6 +71,14 @@ class SafetyNet:
         self.multiclass = len(self.yolo_names) > 1
         self.graduated = set(str(c) for c in (cfg["matching"].get("graduated_classes") or []))
         self.grad_conf = float(cfg["matching"].get("graduate_conf", 0.5))
+        # 多參考庫嵌入審查：可選的 reject(reflection) / normal 參考庫（缺則退回單庫行為）。
+        self.reject_vecs = _load_bank_vecs(WS / "reject_bank.npz")
+        self.normal_vecs = _load_bank_vecs(WS / "normal_bank.npz")
+        self.multibank = self.reject_vecs is not None or self.normal_vecs is not None
+        au = cfg.get("audit", {}) or {}
+        self.audit_enabled = bool(au.get("enabled")) and self.multibank
+        self.conf_high = float(au.get("conf_high", 0.25))   # >= 高信心→分類; < →嵌入審查
+        self.audit_margin = float(au.get("margin", 0.05))   # defect 需領先 reject/normal 此值
 
     def _thr(self, cls):
         """取某類別的判決閾值：有 per-class 設定用之，否則用全域 threshold。"""
@@ -100,6 +128,33 @@ class SafetyNet:
         """R2 雙軌：多類別 YOLO 對『已畢業類別』且夠有把握 -> 直接信任，安全網不再否決。"""
         return self.multiclass and ycls in self.graduated and conf >= self.grad_conf
 
+    def match_audit(self, vec):
+        """多參考庫嵌入審查：比 crop 與 Defect / Reject(reflection) / Normal 三庫的 Top-K 相似度，
+        以「相對距離」裁決（不只靠 defect 單庫閾值）。回傳含 verdict 的 dict。
+          defect_like     : defect 最近且領先 reject/normal >= margin
+          reflection_like : reject 最近
+          normal_like     : normal 最近
+          uncertain       : defect 最近但領先不足（模稜兩可/novel）
+        """
+        cls, s_def, _s2 = self.match(vec)
+        s_rej = _topk_sim(self.reject_vecs @ vec, self.topk) if self.reject_vecs is not None else -1.0
+        s_nrm = _topk_sim(self.normal_vecs @ vec, self.topk) if self.normal_vecs is not None else -1.0
+        cands = {"defect": s_def}
+        if self.reject_vecs is not None: cands["reject"] = s_rej
+        if self.normal_vecs is not None: cands["normal"] = s_nrm
+        winner = max(cands, key=cands.get)
+        others = max([v for kk, v in cands.items() if kk != "defect"], default=-1.0)
+        lead = s_def - others
+        if winner == "defect":
+            verdict = "defect_like" if lead >= self.audit_margin else "uncertain"
+        elif winner == "reject":
+            verdict = "reflection_like"
+        else:
+            verdict = "normal_like"
+        return dict(pred_class=cls, s_defect=round(float(s_def), 4),
+                    s_reject=round(float(s_rej), 4), s_normal=round(float(s_nrm), 4),
+                    lead=round(float(lead), 4), verdict=verdict)
+
     # ---- 單圖完整管線（雙軌：畢業類別走 YOLO，其餘走安全網）----
     def process(self, img, thr=None):
         dets = self.detect(img)
@@ -116,6 +171,19 @@ class SafetyNet:
                                  decision="True", via="yolo", crop=crop))
                 continue
             vec = self.dino.embed(crop)
+            if self.audit_enabled:
+                # 多參考庫審查：相對距離裁決；low-conf 進審查路（recall 撈回），high-conf 走分類路。
+                a = self.match_audit(vec)
+                decision = "True" if a["verdict"] == "defect_like" else "False"
+                tier = "high" if conf >= self.conf_high else "low"
+                via = "classifier" if tier == "high" else "audit"
+                recs.append(dict(box=[float(v) for v in xyxy], conf=conf,
+                                 pred_class=a["pred_class"], score=a["s_defect"], score2=-1.0,
+                                 margin=a["lead"], thr=self.audit_margin, sam_ok=sam_ok,
+                                 decision=decision, via=via, tier=tier,
+                                 verdict=a["verdict"], s_reject=a["s_reject"],
+                                 s_normal=a["s_normal"], crop=crop))
+                continue
             cls, score, score2 = self.match(vec)
             thr_c = self._thr(cls)
             decision = "True" if score >= thr_c else "False"
